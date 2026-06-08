@@ -19,6 +19,8 @@ Core project references:
 - Wei et al., Chain-of-Thought Prompting Elicits Reasoning in Large Language Models.
 - Kang et al., C3oT: Generating Shorter Chain-of-Thought without Compromising Effectiveness.
 
+See [references.bib](references.bib) for citation metadata.
+
 
 ## Research question
 
