@@ -1,0 +1,19 @@
+name: reasoning-compression
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - jupyterlab
+  - ipykernel
+  - pandas
+  - numpy
+  - pyarrow
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - tqdm
+  - pip:
+      - datasets
+      - huggingface-hub
+      - tiktokengit status
