@@ -1,4 +1,10 @@
-# Local secrets
+# Local/generated data
+data/
+reports/
+*.parquet
+*.arrow
+*.csv
+*.jsonl# Local secrets
 .env
 .env.*
 *.env
