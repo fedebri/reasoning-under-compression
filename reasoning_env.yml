@@ -16,4 +16,12 @@ dependencies:
   - pip:
       - datasets
       - huggingface-hub
-      - tiktokengit status
+      - tiktoken
+
+
+
+
+
+## conda env create -f environment.yml
+## conda activate reasoning-compression
+## python -m ipykernel install --user --name reasoning-compression --display-name "Python (reasoning-compression)"
