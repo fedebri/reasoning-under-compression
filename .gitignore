@@ -33,3 +33,7 @@ logs/
 .DS_Store
 .vscode/
 .idea/
+
+# Jupyter
+
+**/.ipynb_checkpoints/
