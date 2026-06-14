@@ -1,3 +1,18 @@
+"""Feature engineering utilities for reasoning compression analysis.
+
+This module contains reusable helpers for parsing OpenMementos responses,
+counting tokens, extracting problem-level features, building trace-level and
+block-level feature tables, and formatting notebook outputs.
+
+The main data representation has two levels:
+
+- trace-level rows: one row per original problem-response pair
+- block-level rows: one row per aligned reasoning block and summary pair
+
+Generated parquet files are intended to be stored locally under the ignored
+``data/`` directory, not committed to Git.
+"""
+
 from itertools import islice
 from pathlib import Path
 import re
@@ -21,21 +36,75 @@ MATH_SYMBOLS = set("+-=*/^<>≤≥≈≠√∑∫π%()[]{}")
 encoding = tiktoken.get_encoding(ENCODING_NAME)
 
 
+__all__ = [
+    "DATASET_ID",
+    "SPLIT",
+    "ENCODING_NAME",
+    "count_tokens",
+    "count_tokens_batch",
+    "parse_response",
+    "extract_problem_features",
+    "build_feature_tables",
+    "extract_spacy_problem_features",
+    "build_feature_chunk",
+    "write_feature_partitions",
+    "format_metrics_percent",
+    "count_share_table",
+    "format_describe",
+]
+
+
 def count_tokens(text: str) -> int:
+    """Count tokens in a text string using the configured tiktoken encoding.
+
+    Args:
+        text: Input text. ``None`` is treated as an empty string.
+
+    Returns:
+        Number of tokens produced by the configured tokenizer.
+    """
+
     if text is None:
         return 0
     return len(encoding.encode(text))
 
 
 def count_tokens_batch(texts: list[str]) -> list[int]:
-    # Batch tokenization is faster than encoding block-summary pairs one at a time.
+    """Count tokens for a batch of text strings.
+
+    Batch tokenization is faster than repeatedly calling the tokenizer on one
+    string at a time, especially when processing many reasoning blocks and
+    summaries.
+
+    Args:
+        texts: List of input strings. ``None`` values are treated as empty strings.
+
+    Returns:
+        List of token counts aligned with the input list.
+    """
+
     texts = ["" if x is None else x for x in texts]
     return [len(tokens) for tokens in encoding.encode_batch(texts)]
 
 
 # helper function to preprocess the response variable
 def parse_response(response: str) -> dict:
-    # eventual missing responses are treated as empty strings
+    """Parse an OpenMementos response into reasoning and answer components.
+
+    The parser assumes that the response contains a ``<think>...</think>``
+    section. Inside that section, reasoning is represented as repeated
+    ``block`` and ``summary`` spans.
+    Eventual missing responses are treated as empty strings
+
+    Args:
+        response: Raw response string from OpenMementos.
+
+    Returns:
+        Dictionary containing the parsed thinking text, final answer text,
+        extracted blocks, extracted summaries, block counts, summary counts,
+        and character-length diagnostics.
+    """
+
     if response is None:
         response = ""
 
@@ -66,8 +135,24 @@ def parse_response(response: str) -> dict:
     }
 
 
+
+
 def extract_problem_features(problem: str) -> dict:
-    # predictors come only from the original problem, avoiding target leakage
+    """Extract lightweight predictor features from the original problem text.
+
+    These features are safe predictors because they are computed only from the
+    prompt/problem, before observing reasoning blocks, summaries, or compression
+    outcomes, avoiding target leakage
+
+    Args:
+        problem: Raw problem text.
+
+    Returns:
+        Dictionary of problem-level features, including token length, character
+        length, math-symbol share, multiple-choice indicator, code-fence
+        indicator, and question-mark count.
+    """
+
     if problem is None:
         problem = ""
 
@@ -84,7 +169,24 @@ def extract_problem_features(problem: str) -> dict:
     }
 
 
-def build_feature_tables(n_rows: int, dataset_id: str = DATASET_ID, split: str = SPLIT):
+
+
+def build_feature_tables(n_rows: int, dataset_id: str = DATASET_ID, split: str = SPLIT,) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build trace-level and block-level feature tables from a streamed sample.
+
+    This helper is intended for exploratory and development notebooks. It
+    streams only the first ``n_rows`` examples and materializes the resulting
+    feature tables in memory.
+
+    Args:
+        n_rows: Number of streamed dataset rows to process.
+        dataset_id: Hugging Face dataset identifier.
+        split: Dataset split to stream.
+
+    Returns:
+        Tuple ``(df_traces, df_blocks)`` where ``df_traces`` has one row per
+        reasoning trace and ``df_blocks`` has one row per block-summary pair.
+    """
     ds_stream = load_dataset(dataset_id, split=split, streaming=True)
 
     trace_rows = []
@@ -144,7 +246,21 @@ def build_feature_tables(n_rows: int, dataset_id: str = DATASET_ID, split: str =
     return pd.DataFrame(trace_rows), pd.DataFrame(block_rows)
 
 
-def extract_spacy_problem_features(doc) -> dict:
+def extract_spacy_problem_features(doc: object) -> dict:
+    """Extract optional spaCy linguistic features from a parsed problem document.
+
+    The input is a spaCy ``Doc`` object, not a raw string. These features are
+    intended as optional problem-level predictors and are not required for the
+    core token-compression pipeline.
+
+    Args:
+        doc: spaCy document produced from a problem string.
+
+    Returns:
+        Dictionary of linguistic features such as sentence count, average
+        sentence length, stopword share, punctuation share, numeric-token share,
+        out-of-vocabulary share, noun share, verb share, and entity count.
+    """
     # spaCy features for the original problem text
     tokens = [tok for tok in doc if not tok.is_space]
 
@@ -176,7 +292,21 @@ def extract_spacy_problem_features(doc) -> dict:
     }
 
 
-def build_feature_chunk(rows: list[dict], start_trace_id: int):
+
+
+def build_feature_chunk(rows: list[dict], start_trace_id: int,) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build feature tables for one chunk of streamed dataset rows.
+
+    This function is used by ``write_feature_partitions`` to process the full
+    dataset in bounded-memory chunks.
+
+    Args:
+        rows: List of raw dataset rows.
+        start_trace_id: Trace ID assigned to the first row in the chunk.
+
+    Returns:
+        Tuple ``(df_traces, df_blocks)`` for the chunk.
+    """
     trace_rows = []
     block_rows = []
 
@@ -235,7 +365,27 @@ def build_feature_chunk(rows: list[dict], start_trace_id: int):
     return pd.DataFrame(trace_rows), pd.DataFrame(block_rows)
 
 
-def write_feature_partitions(output_dir: Path, chunk_size: int = 10_000, max_rows: int | None = None):
+
+
+def write_feature_partitions(output_dir: Path, chunk_size: int = 10_000, max_rows: int | None = None,) -> dict:
+    """Stream OpenMementos and write trace/block feature parquet partitions.
+
+    The function writes two partitioned parquet directories under ``output_dir``:
+
+    - ``traces/``: trace-level feature partitions
+    - ``blocks/``: block-level feature partitions
+
+    Args:
+        output_dir: Directory where parquet partitions should be written.
+        chunk_size: Number of original traces to process per parquet partition.
+        max_rows: Optional maximum number of streamed rows. Use ``None`` to
+            process the full split.
+
+    Returns:
+        Build summary with output path, number of trace rows, number of block
+        rows, and number of written partitions.
+    """
+
     trace_dir = output_dir / "traces"
     block_dir = output_dir / "blocks"
     trace_dir.mkdir(parents=True, exist_ok=True)
@@ -280,6 +430,15 @@ def write_feature_partitions(output_dir: Path, chunk_size: int = 10_000, max_row
 
 
 def format_metrics_percent(metrics: dict) -> pd.DataFrame:
+    """Format model metrics as a compact percentage dataframe.
+
+    Args:
+        metrics: Dictionary mapping metric names to decimal values, such as
+            ``0.802`` for 80.2%.
+
+    Returns:
+        DataFrame with ``metric`` and formatted percentage ``value`` columns.
+    """
     return pd.DataFrame({
         "metric": metrics.keys(),
         "value": [f"{value * 100:.2f}%" for value in metrics.values()],
@@ -287,6 +446,15 @@ def format_metrics_percent(metrics: dict) -> pd.DataFrame:
 
 
 def count_share_table(df: pd.DataFrame, column: str) -> pd.DataFrame:
+    """Count rows and percentage shares for a dataframe column.
+
+    Args:
+        df: Input dataframe.
+        column: Column name to summarize.
+
+    Returns:
+        DataFrame with row counts and percentage shares for each value.
+    """
     counts = df[column].value_counts(dropna=False)
     shares = df[column].value_counts(normalize=True, dropna=False)
 
@@ -295,3 +463,29 @@ def count_share_table(df: pd.DataFrame, column: str) -> pd.DataFrame:
         .assign(share_pct=lambda x: (x["share"] * 100).round(2))
         .drop(columns="share")
     )
+
+
+
+
+def format_describe(summary: pd.Series, decimals: int = 4) -> pd.Series:
+    """Format a pandas ``describe`` summary for readable notebook display.
+
+    The ``count`` row is formatted as an integer with thousands separators.
+    Other rows are formatted as fixed-decimal values.
+
+    Args:
+        summary: Series returned by ``pandas.Series.describe``.
+        decimals: Number of decimal places for non-count rows.
+
+    Returns:
+        Formatted summary series with string values.
+    """
+    # Keep count readable as an integer while formatting distribution statistics
+    # as fixed-decimal values.
+    formatted = summary.copy().astype(object)
+    formatted["count"] = f"{int(summary['count']):,}"
+
+    for idx in summary.index.drop("count"):
+        formatted[idx] = f"{summary[idx]:.{decimals}f}"
+
+    return formatted

@@ -1,0 +1,22 @@
+site_name: Reasoning Under Compression
+site_description: Documentation for the reasoning compression analysis pipeline.
+site_author: fedebri
+
+theme:
+  name: material
+
+nav:
+  - Home: index.md
+  - API Reference: api.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: ["."]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_signature_annotations: true
