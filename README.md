@@ -44,7 +44,7 @@ The dataset contains long reasoning traces annotated with:
 - response: full reasoning trace;
 - domain: broad domain, such as math, code, or science;
 - source: source dataset;
-- difficulty: task-level difficulty metadata, when available;
+- difficulty: task-level difficulty metadata, (available for coding problems only);
 - sentences: sentence-level decomposition of the reasoning trace;
 - blocks: block segmentation of the reasoning trace;
 - block_summaries: compressed summaries, or mementos, for each block.
@@ -76,9 +76,8 @@ The analysis distinguishes between:
 3. Sequential compressibility
    Compressibility predicted from the problem, current block, and previous reasoning history.
 
-## Target variables
 
-## Classification targets
+## Classification target variables
 
 The basic compression ratio is computed as:
 
@@ -99,18 +98,6 @@ Primary target:
 ```text
 high_compression_t = 1 if block_compression_ratio_t <= 25th percentile
 high_compression_t = 0 otherwise
-```
-
-Alternative targets:
-
-```text
-compression_class_t = low / medium / high compression
-```
-
-or:
-
-```text
-low_compression_t = 1 if block_compression_ratio_t >= 75th percentile
 ```
 
 Lower compression ratios indicate stronger compression. Therefore, a high-compression block is one that can be represented by a relatively short memento compared with the original block.
@@ -181,58 +168,6 @@ Interpretation:
 
 Does compressibility emerge dynamically as the reasoning chain unfolds?
 
-## Feature engineering
-
-The raw dataset is transformed from trace-level format to block-level format.
-
-Original unit:
-
-text one row = one reasoning trace
-
-Engineered unit:
-
-text one row = one reasoning block within a trace
-
-Main feature groups:
-
-### Prompt-level features
-
-- problem_words
-- problem_chars
-- domain
-- source
-- difficulty
-- math-symbol counts in the problem
-- code-marker counts in the problem
-
-### Block-level features
-
-- block_index
-- block_words
-- block_chars
-- block_sentence_count
-- noun_count
-- verb_count
-- adjective_count
-- noun_verb_ratio
-- symbolic_density
-- code_marker_count
-- reasoning_marker_count
-
-### Sequential-history features
-
-- previous_total_words
-- previous_num_blocks
-- previous_avg_block_words
-- previous_avg_compression_ratio
-- cumulative_compression_ratio
-- relative_block_position
-
-### Excluded variables
-
-To avoid target leakage, features derived from block_summaries are not used as predictors when predicting compression ratio.
-
-Summary-derived variables are used only to construct the target.
 
 ## Methods
 
@@ -240,56 +175,20 @@ The project focuses on tree-based supervised learning methods.
 
 Main models:
 
-- Decision Tree Classifier;
 - Random Forest Classifier;
 - Gradient Boosting Classifier.
 
-Baseline models:
-
-- majority-class classifier;
-- domain-level majority classifier;
-- logistic regression;
-- optionally linear SVM as a non-tree benchmark.
-
 The methodological comparison moves from a simple interpretable tree to ensemble methods that capture more complex non-linear interactions.
 
-## Evaluation
+## Repository Structure
 
-- accuracy;
-- balanced accuracy;
-- precision;
-- recall;
-- F1-score;
-- ROC-AUC;
-- confusion matrix.
-
-The key comparison is not only between algorithms, but between information sets:
-
-```text
-Prompt-only vs current-block vs history-aware sequential classifiers
-```
-
-If the history-aware model improves substantially over the prompt-only model, this supports the idea that compressibility is dynamically revealed during reasoning.
-
-## Interpretation
-
-Tree-based models are used not only for prediction but also for interpretation.
-
-Possible interpretation tools:
-
-- feature importance;
-- permutation importance;
-- partial dependence plots;
-- domain-stratified analysis;
-- comparison of early, middle, and late reasoning blocks.
-
-Main interpretive questions:
-
-- Is compression mostly driven by domain?
-- Are longer blocks more compressible?
-- Does symbolic or code density reduce compressibility?
-- Does previous compression behavior predict later compression behavior?
-- Do math, code, and science traces have different compression dynamics?
+- `notebooks/01_openmementos_probe.ipynb`
+- `notebooks/02_feature_engineering.ipynb`
+- `notebooks/03_baseline_modeling.ipynb`
+- `notebooks/04_full_data_feature_build.ipynb`
+- `notebooks/05_full_scale_modeling.ipynb`
+- `notebooks/06_project_summary.ipynb`
+- `src/reasoning_compression/features.py`
 
 
 ## Limitations
@@ -316,3 +215,16 @@ Possible extensions include:
 ## Project status
 
 Proposal-stage research project for a PhD course in Statistics for Data Mining and Machine Learning.
+
+
+## Documentation
+
+This project uses MkDocs with mkdocstrings for local documentation.
+
+To preview the docs locally:
+
+```bash
+conda activate reasoning-compression
+mkdocs serve
+
+http://127.0.0.1:8000/
