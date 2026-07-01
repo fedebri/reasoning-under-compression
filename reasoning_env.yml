@@ -13,7 +13,19 @@ dependencies:
   - matplotlib
   - seaborn
   - tqdm
+  - pytest
+  - spacy
+  - spacy-model-en_core_web_sm
+  - mkdocs
+  - mkdocs-material
+  - mkdocstrings
+  - mkdocstrings-python
   - pip:
       - datasets
       - huggingface-hub
-      - tiktokengit status
+      - tiktoken
+
+# conda env create -f reasoning_env.yml
+# conda activate reasoning-compression
+# python -m ipykernel install --user --name reasoning-compression \
+#   --display-name "Python (reasoning-compression)"
