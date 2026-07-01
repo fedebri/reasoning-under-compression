@@ -4,7 +4,9 @@ reports/
 *.parquet
 *.arrow
 *.csv
-*.jsonl# Local secrets
+*.jsonl
+
+# Local secrets
 .env
 .env.*
 *.env
@@ -35,5 +37,4 @@ logs/
 .idea/
 
 # Jupyter
-
 **/.ipynb_checkpoints/
