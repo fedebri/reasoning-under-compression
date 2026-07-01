@@ -207,12 +207,14 @@ ensemble methods that capture more complex non-linear interactions.
 
 ## Repository Structure
 
-- `notebooks/01_openmementos_probe.ipynb`
-- `notebooks/02_feature_engineering.ipynb`
-- `notebooks/03_baseline_modelling.ipynb`
-- `notebooks/04_full_data_feature_build.ipynb`
-- `notebooks/05_model_evaluation.ipynb`
-- `notebooks/06_reasoning_under_compression.ipynb`
+- `notebooks/01_data_loading_engineering.ipynb`
+- `notebooks/02_prompt_level_compressibility.ipynb`
+- `notebooks/03_block_level_compressibility.ipynb`
+- `notebooks/04_sequential_compressibility.ipynb`
+- `notebooks/05_reasoning_under_compression.ipynb`
+- `notebooks/eda01_openmementos_probe.ipynb`
+- `notebooks/eda02_feature_engineering.ipynb`
+- `notebooks/eda03_baseline_modelling.ipynb`
 - `src/reasoning_compression/features.py`
 - `tests/`
 
