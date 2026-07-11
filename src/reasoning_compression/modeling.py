@@ -1,7 +1,6 @@
 """Shared modeling utilities for reasoning-compression notebooks."""
 
 from collections.abc import Mapping, Sequence
-from typing import Protocol
 
 import numpy as np
 import pandas as pd
@@ -11,13 +10,11 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
-    classification_report,
     confusion_matrix,
     roc_auc_score,
 )
 from sklearn.model_selection import GroupShuffleSplit, ParameterGrid
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
 
 DEFAULT_SELECTION_METRIC = "roc_auc"
 DEFAULT_VALIDATION_SIZE = 0.2
@@ -48,81 +45,12 @@ __all__ = [
     "DEFAULT_MAX_TUNING_GROUPS",
     "RANDOM_FOREST_PARAM_GRID",
     "GRADIENT_BOOSTING_PARAM_GRID",
-    "evaluate_classifier",
-    "make_preprocessor",
-    "make_pipeline",
     "make_grouped_tuning_data",
     "select_model_params",
     "fit_selected_model",
-    "classification_report_frame",
     "confusion_matrix_frame",
     "random_forest_feature_importance",
 ]
-
-
-class ProbabilisticClassifier(Protocol):
-    """Classifier protocol required by the notebook evaluation helpers."""
-
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        ...
-
-    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        ...
-
-
-def evaluate_classifier(
-    model: ProbabilisticClassifier,
-    X_eval: pd.DataFrame,
-    y_eval: pd.Series,
-) -> dict[str, float]:
-    """Evaluate binary classifier performance on a fixed evaluation split."""
-    pred = model.predict(X_eval)
-    proba = model.predict_proba(X_eval)[:, 1]
-
-    metrics = {
-        "accuracy": accuracy_score(y_eval, pred),
-        "balanced_accuracy": balanced_accuracy_score(y_eval, pred),
-    }
-
-    if y_eval.nunique() == 2:
-        metrics["roc_auc"] = roc_auc_score(y_eval, proba)
-    else:
-        metrics["roc_auc"] = np.nan
-
-    return metrics
-
-
-def make_preprocessor(
-    numeric_columns: list[str],
-    binary_columns: list[str],
-    categorical_columns: list[str],
-) -> ColumnTransformer:
-    """Build a preprocessing transformer for model-ready feature tables."""
-    return ColumnTransformer(
-        transformers=[
-            ("num", "passthrough", numeric_columns),
-            ("bin", "passthrough", binary_columns),
-            (
-                "cat",
-                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
-                categorical_columns,
-            ),
-        ]
-    )
-
-
-def make_pipeline(
-    model_class: type[BaseEstimator],
-    model_params: Mapping[str, object],
-    preprocessor: ColumnTransformer,
-) -> Pipeline:
-    """Build a fresh preprocessing/model pipeline."""
-    return Pipeline(
-        steps=[
-            ("preprocess", clone(preprocessor)),
-            ("model", model_class(**dict(model_params))),
-        ]
-    )
 
 
 def make_grouped_tuning_data(
@@ -190,9 +118,24 @@ def select_model_params(
 
     rows = []
     for params in ParameterGrid(param_grid):
-        model = make_pipeline(model_class, params, preprocessor)
+        model = Pipeline(
+            steps=[
+                ("preprocess", clone(preprocessor)),
+                ("model", model_class(**dict(params))),
+            ]
+        )
         model.fit(X_fit, y_fit)
-        metrics = evaluate_classifier(model, X_val, y_val)
+        pred = model.predict(X_val)
+        proba = model.predict_proba(X_val)[:, 1]
+        metrics = {
+            "accuracy": accuracy_score(y_val, pred),
+            "balanced_accuracy": balanced_accuracy_score(y_val, pred),
+            "roc_auc": (
+                roc_auc_score(y_val, proba)
+                if y_val.nunique() == 2
+                else np.nan
+            ),
+        }
         rows.append({
             "model": model_name,
             "params": params,
@@ -228,39 +171,14 @@ def fit_selected_model(
     y_train: pd.Series,
 ) -> Pipeline:
     """Fit the selected model configuration on the full training split."""
-    model = make_pipeline(model_class, selected_params, preprocessor)
+    model = Pipeline(
+        steps=[
+            ("preprocess", clone(preprocessor)),
+            ("model", model_class(**dict(selected_params))),
+        ]
+    )
     model.fit(X_train, y_train)
     return model
-
-
-def classification_report_frame(
-    model_name: str,
-    y_true: pd.Series,
-    y_pred: np.ndarray,
-) -> pd.DataFrame:
-    """Return a sklearn classification report as a tidy dataframe."""
-    report = classification_report(
-        y_true,
-        y_pred,
-        output_dict=True,
-        zero_division=0,
-    )
-
-    rows = []
-    for label, values in report.items():
-        if isinstance(values, dict):
-            rows.append({"model": model_name, "label": label, **values})
-        else:
-            rows.append({
-                "model": model_name,
-                "label": label,
-                "precision": np.nan,
-                "recall": np.nan,
-                "f1-score": values,
-                "support": len(y_true),
-            })
-
-    return pd.DataFrame(rows)
 
 
 def confusion_matrix_frame(

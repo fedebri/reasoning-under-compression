@@ -107,7 +107,6 @@ __all__ = [
     "build_feature_chunk",
     "write_feature_partitions",
     "latest_feature_build_dir",
-    "format_metrics_percent",
     "count_share_table",
     "format_describe",
 ]
@@ -629,22 +628,6 @@ def latest_feature_build_dir(base_dir: Path) -> Path:
         )
 
     return max(candidates, key=lambda path: path.name)
-
-
-def format_metrics_percent(metrics: Mapping[str, float]) -> pd.DataFrame:
-    """Format model metrics as a compact percentage dataframe.
-
-    Args:
-        metrics: Dictionary mapping metric names to decimal values, such as
-            ``0.802`` for 80.2%.
-
-    Returns:
-        DataFrame with ``metric`` and formatted percentage ``value`` columns.
-    """
-    return pd.DataFrame({
-        "metric": metrics.keys(),
-        "value": [f"{value * 100:.2f}%" for value in metrics.values()],
-    })
 
 
 def count_share_table(df: pd.DataFrame, column: str) -> pd.DataFrame:

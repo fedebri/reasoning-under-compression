@@ -1,10 +1,11 @@
 import pandas as pd
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, roc_auc_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 
 from src.reasoning_compression.modeling import (
-    evaluate_classifier,
-    fit_selected_model,
-    make_preprocessor,
     random_forest_feature_importance,
     select_model_params,
 )
@@ -19,10 +20,16 @@ def test_select_fit_and_evaluate_random_forest_pipeline() -> None:
     y = pd.Series([0, 1] * 10)
     groups = pd.Series(range(20))
 
-    preprocessor = make_preprocessor(
-        numeric_columns=["numeric_feature"],
-        binary_columns=["binary_feature"],
-        categorical_columns=["category"],
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", "passthrough", ["numeric_feature"]),
+            ("bin", "passthrough", ["binary_feature"]),
+            (
+                "cat",
+                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+                ["category"],
+            ),
+        ]
     )
 
     param_grid = {
@@ -46,15 +53,24 @@ def test_select_fit_and_evaluate_random_forest_pipeline() -> None:
     assert len(selection_results) == 1
     assert selection_results.loc[0, "params"]["n_estimators"] == 5
 
-    model = fit_selected_model(
-        model_class=RandomForestClassifier,
-        selected_params=selection_results.loc[0, "params"],
-        preprocessor=preprocessor,
-        X_train=X,
-        y_train=y,
+    model = Pipeline(
+        steps=[
+            ("preprocess", preprocessor),
+            (
+                "model",
+                RandomForestClassifier(**selection_results.loc[0, "params"]),
+            ),
+        ]
     )
+    model.fit(X, y)
 
-    metrics = evaluate_classifier(model, X, y)
+    pred = model.predict(X)
+    proba = model.predict_proba(X)[:, 1]
+    metrics = {
+        "accuracy": accuracy_score(y, pred),
+        "balanced_accuracy": balanced_accuracy_score(y, pred),
+        "roc_auc": roc_auc_score(y, proba),
+    }
     assert set(metrics) == {"accuracy", "balanced_accuracy", "roc_auc"}
 
     importances = random_forest_feature_importance(model)
