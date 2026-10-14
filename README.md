@@ -218,6 +218,12 @@ ensemble methods that capture more complex non-linear interactions.
 - `src/reasoning_compression/features.py`
 - `tests/`
 
+Notebooks 02–04 save their held-out evaluation results under
+`data/full_feature_builds/<build>/evaluation/`. Run them for the selected build
+before running notebook 05, which loads those results and verifies the build ID
+and feature-table SHA-256 digest. Evaluation artifacts stay local under the
+ignored `data/` directory.
+
 
 ## Limitations
 
