@@ -531,6 +531,8 @@ def write_feature_partitions(
     - ``traces/``: trace-level feature partitions
     - ``blocks/``: block-level feature partitions
 
+    Both partition directories must be new to avoid mixing builds.
+
     Args:
         output_dir: Directory where parquet partitions should be written.
         chunk_size: Number of original traces to process per parquet partition.
@@ -550,8 +552,8 @@ def write_feature_partitions(
     output_dir = Path(output_dir)
     trace_dir = output_dir / "traces"
     block_dir = output_dir / "blocks"
-    trace_dir.mkdir(parents=True, exist_ok=True)
-    block_dir.mkdir(parents=True, exist_ok=True)
+    trace_dir.mkdir(parents=True)
+    block_dir.mkdir(parents=True)
 
     ds_stream = load_dataset(DATASET_ID, split=SPLIT, streaming=True)
     iterator = islice(ds_stream, max_rows) if max_rows is not None else ds_stream

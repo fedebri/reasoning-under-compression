@@ -1,14 +1,17 @@
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
+from src.reasoning_compression import features
 from src.reasoning_compression.features import (
     NOT_APPLICABLE_DIFFICULTY,
     build_feature_chunk,
     latest_feature_build_dir,
     normalize_difficulty,
     parse_response,
+    write_feature_partitions,
 )
 
 
@@ -123,3 +126,64 @@ def test_latest_feature_build_dir_returns_newest_complete_build(
     (incomplete_build / "blocks_features_full_labeled.parquet").touch()
 
     assert latest_feature_build_dir(tmp_path) == new_build
+
+
+def test_write_feature_partitions_preserves_existing_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        {
+            "problem": f"Problem {index}",
+            "response": (
+                "<think><|block_start|>Reasoning<|block_end|>"
+                "<|summary_start|>Summary<|summary_end|></think>Answer"
+            ),
+            "domain": "math",
+            "source": "synthetic",
+        }
+        for index in range(3)
+    ]
+    monkeypatch.setattr(features, "load_dataset", lambda *args, **kwargs: rows)
+    output_dir = tmp_path / "build"
+
+    summary = write_feature_partitions(output_dir, chunk_size=2)
+    traces = pd.read_parquet(output_dir / "traces")
+    blocks = pd.read_parquet(output_dir / "blocks")
+
+    assert summary["n_trace_rows"] == summary["n_block_rows"] == 3
+    assert summary["n_parts"] == 2
+    assert traces["trace_id"].tolist() == [0, 1, 2]
+    assert blocks["trace_id"].tolist() == [0, 1, 2]
+
+    with pytest.raises(FileExistsError, match="traces"):
+        write_feature_partitions(output_dir, chunk_size=2, max_rows=1)
+
+    pd.testing.assert_frame_equal(
+        pd.read_parquet(output_dir / "traces"), traces
+    )
+    pd.testing.assert_frame_equal(
+        pd.read_parquet(output_dir / "blocks"), blocks
+    )
+
+
+def test_write_feature_partitions_rejects_existing_block_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block_dir = tmp_path / "blocks"
+    block_dir.mkdir()
+    part = block_dir / "blocks_part_0000.parquet"
+    part.write_bytes(b"existing partition")
+
+    def unexpected_load_dataset(*args: object, **kwargs: object) -> None:
+        pytest.fail(
+            "Existing partition directories must be rejected before streaming."
+        )
+
+    monkeypatch.setattr(features, "load_dataset", unexpected_load_dataset)
+
+    with pytest.raises(FileExistsError, match="blocks"):
+        write_feature_partitions(tmp_path)
+
+    assert part.read_bytes() == b"existing partition"
