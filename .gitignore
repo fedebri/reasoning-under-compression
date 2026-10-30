@@ -1,15 +1,15 @@
+# Portable defaults for local/generated data.
+# Reviewed project exceptions below take precedence.
+*.csv
+*.parquet
+*.arrow
+*.jsonl
+
 # Local/generated data
 data/
 reports/
-*.parquet
-*.arrow
-*.csv
-*.jsonl
 
 # Local secrets
-.env
-.env.*
-*.env
 secrets/
 credentials/
 private/
@@ -32,10 +32,30 @@ logs/
 *.log
 
 # macOS/editor
-.DS_Store
 .vscode/
 .idea/
 
 # Jupyter
 **/.ipynb_checkpoints/
 notebooks/local/
+
+# Shared credential and OS safety baseline; keep independent of global Git config.
+# Existing reviewed template exceptions follow this block.
+.env
+.env.*
+*.env
+.dev.vars
+.dev.vars.*
+*.pem
+*.key
+*.p12
+*.pfx
+*service-account*.json
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# macOS metadata
+.DS_Store
+.AppleDouble
