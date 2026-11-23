@@ -14,6 +14,7 @@ Generated parquet files are intended to be stored locally under the ignored
 """
 
 from collections.abc import Mapping, Sequence
+from hashlib import sha256
 from itertools import islice
 from pathlib import Path
 import re
@@ -451,6 +452,7 @@ def build_feature_chunk(
         problem = _coerce_optional_text(row.get("problem"), "problem", trace_id)
         response = _coerce_optional_text(row.get("response"), "response", trace_id)
         metadata = _metadata_from_row(row, row_index=trace_id)
+        metadata["prompt_id"] = sha256(problem.encode("utf-8")).hexdigest()
         parsed = parse_response(response)
         problem_features = extract_problem_features(problem)
 

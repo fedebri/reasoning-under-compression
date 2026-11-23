@@ -47,10 +47,27 @@ __all__ = [
     "GRADIENT_BOOSTING_PARAM_GRID",
     "make_grouped_tuning_data",
     "select_model_params",
+    "validate_prompt_split",
     "fit_selected_model",
     "confusion_matrix_frame",
     "random_forest_feature_importance",
 ]
+
+
+def validate_prompt_split(table: pd.DataFrame) -> None:
+    """Verify that the persisted holdout contains complete, disjoint prompt groups."""
+    if "prompt_id" not in table:
+        raise ValueError(
+            "This build predates prompt grouping. Create a new build with "
+            "RUN_FULL_BUILD=1 in notebook 01 and rerun notebooks 02–04."
+        )
+    if table["prompt_id"].isna().any():
+        raise ValueError("Some rows are missing prompt_id.")
+    split = table["model_split"]
+    if split.isna().any() or set(split.unique()) != {"train", "test"}:
+        raise ValueError("Expected train and test partitions for all rows.")
+    if table.groupby("prompt_id")["model_split"].nunique().gt(1).any():
+        raise ValueError("A prompt appears in both train and test partitions.")
 
 
 def make_grouped_tuning_data(
@@ -115,6 +132,8 @@ def select_model_params(
     X_val = X_tune.iloc[val_idx]
     y_fit = y_tune.iloc[fit_idx]
     y_val = y_tune.iloc[val_idx]
+    n_fit_groups = groups_tune.iloc[fit_idx].nunique()
+    n_validation_groups = groups_tune.iloc[val_idx].nunique()
 
     rows = []
     for params in ParameterGrid(param_grid):
@@ -142,6 +161,8 @@ def select_model_params(
             "n_tuning_rows": len(X_tune),
             "n_fit_rows": len(X_fit),
             "n_validation_rows": len(X_val),
+            "n_fit_groups": n_fit_groups,
+            "n_validation_groups": n_validation_groups,
             **metrics,
         })
 
