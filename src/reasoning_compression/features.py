@@ -14,10 +14,14 @@ Generated parquet files are intended to be stored locally under the ignored
 """
 
 from collections.abc import Mapping, Sequence
-from hashlib import sha256
+from contextlib import ExitStack
+from hashlib import file_digest, sha256
 from itertools import islice
+import json
 from pathlib import Path
 import re
+from shutil import rmtree
+from tempfile import TemporaryDirectory
 from typing import TypedDict
 
 import numpy as np
@@ -32,8 +36,8 @@ SPLIT = "train"
 ENCODING_NAME = "cl100k_base"
 NOT_APPLICABLE_DIFFICULTY = "not_applicable"
 
-BLOCK_RE = re.compile(r"<\|block_start\|>(.*?)<\|block_end\|>", re.DOTALL)
-SUMMARY_RE = re.compile(r"<\|summary_start\|>(.*?)<\|summary_end\|>", re.DOTALL)
+PAIR_MARKERS = ("block_start", "block_end", "summary_start", "summary_end")
+MARKER_RE = re.compile(r"<\|(" + "|".join(PAIR_MARKERS) + r")\|>")
 THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 MATH_SYMBOLS = set("+-=*/^<>≤≥≈≠√∑∫π%()[]{}")
 REQUIRED_ROW_FIELDS = ("problem", "response", "domain", "source")
@@ -41,9 +45,6 @@ FEATURE_BUILD_FILES = (
     "blocks_features_full_labeled.parquet",
     "traces_features_full_labeled.parquet",
 )
-
-encoding = tiktoken.get_encoding(ENCODING_NAME)
-
 
 class ParsedResponse(TypedDict):
     """Structured representation extracted from an OpenMementos response."""
@@ -68,6 +69,33 @@ class ProblemFeatures(TypedDict):
     problem_has_multiple_choice: int
     problem_has_code_fence: int
     problem_question_mark_count: int
+
+
+# Empty and populated chunks must produce the same parquet schema.
+COMMON_DTYPES = {
+    **dict.fromkeys(("domain", "source", "difficulty", "prompt_id"), "string"),
+    **ProblemFeatures.__annotations__,
+}
+TRACE_DTYPES = {
+    "trace_id": int,
+    **COMMON_DTYPES,
+    **dict.fromkeys((
+        "response_chars", "response_tokens", "think_chars", "think_tokens",
+        "answer_chars", "answer_tokens", "n_blocks", "n_summaries", "block_summary_delta",
+    ), int),
+}
+BLOCK_DTYPES = {
+    "trace_id": int,
+    "block_index": int,
+    **COMMON_DTYPES,
+    "n_blocks_in_trace": int,
+    "relative_block_position": float,
+    **dict.fromkeys(("block_chars", "summary_chars", "block_tokens", "summary_tokens"), int),
+    **dict.fromkeys((
+        "summary_to_block_char_ratio", "summary_to_block_token_ratio",
+        "char_compression_savings", "token_compression_savings",
+    ), float),
+}
 
 
 class SpacyProblemFeatures(TypedDict):
@@ -108,6 +136,7 @@ __all__ = [
     "build_feature_chunk",
     "write_feature_partitions",
     "latest_feature_build_dir",
+    "read_feature_table",
     "count_share_table",
     "format_describe",
 ]
@@ -233,7 +262,9 @@ def count_tokens(text: str | None) -> int:
         Number of tokens produced by the configured tokenizer.
     """
 
-    return len(encoding.encode(_coerce_optional_text(text, "text")))
+    # A prompt may quote tokenizer markers literally, especially in coding tasks.
+    encoding = tiktoken.get_encoding(ENCODING_NAME)
+    return len(encoding.encode_ordinary(_coerce_optional_text(text, "text")))
 
 
 def count_tokens_batch(texts: Sequence[str | None]) -> list[int]:
@@ -253,7 +284,8 @@ def count_tokens_batch(texts: Sequence[str | None]) -> list[int]:
     validated_texts = [
         _coerce_optional_text(text, "texts") for text in texts
     ]
-    return [len(tokens) for tokens in encoding.encode_batch(validated_texts)]
+    encoding = tiktoken.get_encoding(ENCODING_NAME)
+    return [len(tokens) for tokens in encoding.encode_ordinary_batch(validated_texts)]
 
 
 def parse_response(response: str | None) -> ParsedResponse:
@@ -262,7 +294,8 @@ def parse_response(response: str | None) -> ParsedResponse:
     The parser assumes that the response contains a ``<think>...</think>``
     section. Inside that section, reasoning is represented as repeated
     ``block`` and ``summary`` spans.
-    Missing responses are treated as empty strings.
+    Missing responses are treated as empty strings. Malformed delimiter
+    sequences and empty marked spans raise ValueError.
 
     Args:
         response: Raw response string from OpenMementos.
@@ -282,12 +315,33 @@ def parse_response(response: str | None) -> ParsedResponse:
         think_text = think_match.group(1)
         answer_text = response[think_match.end():].strip()
     else:
+        if "<think>" in response or "</think>" in response or MARKER_RE.search(response):
+            raise ValueError("Incomplete reasoning section in response.")
         think_text = ""
         answer_text = response.strip()
 
-    # extract aligned reasoning blocks and summaries in the thinking section
-    blocks = [x.strip() for x in BLOCK_RE.findall(think_text)]
-    summaries = [x.strip() for x in SUMMARY_RE.findall(think_text)]
+    # Follow the four delimiters in order. A missing summary must never shift
+    # every later summary onto the preceding block.
+    blocks = []
+    summaries = []
+    position = 0
+    content_start = 0
+    for marker in MARKER_RE.finditer(think_text):
+        kind = marker.group(1)
+        if kind != PAIR_MARKERS[position]:
+            raise ValueError(f"Expected {PAIR_MARKERS[position]} marker, found {kind}.")
+        if kind in ("block_end", "summary_end"):
+            content = think_text[content_start:marker.start()].strip()
+            if not content:
+                raise ValueError(f"Empty {kind.removesuffix('_end')} span.")
+            if kind == "block_end":
+                blocks.append(content)
+            else:
+                summaries.append(content)
+        content_start = marker.end()
+        position = (position + 1) % len(PAIR_MARKERS)
+    if position:
+        raise ValueError(f"Incomplete block-summary pair, expected {PAIR_MARKERS[position]}.")
 
     return {
         "think_text": think_text,
@@ -453,7 +507,10 @@ def build_feature_chunk(
         response = _coerce_optional_text(row.get("response"), "response", trace_id)
         metadata = _metadata_from_row(row, row_index=trace_id)
         metadata["prompt_id"] = sha256(problem.encode("utf-8")).hexdigest()
-        parsed = parse_response(response)
+        try:
+            parsed = parse_response(response)
+        except ValueError as exc:
+            raise ValueError(f"Malformed response in trace {trace_id}: {exc}") from exc
         problem_features = extract_problem_features(problem)
 
         trace_rows.append({
@@ -518,7 +575,10 @@ def build_feature_chunk(
                 ),
             })
 
-    return pd.DataFrame(trace_rows), pd.DataFrame(block_rows)
+    return (
+        pd.DataFrame(trace_rows, columns=TRACE_DTYPES).astype(TRACE_DTYPES),
+        pd.DataFrame(block_rows, columns=BLOCK_DTYPES).astype(BLOCK_DTYPES),
+    )
 
 
 def write_feature_partitions(
@@ -554,50 +614,50 @@ def write_feature_partitions(
     output_dir = Path(output_dir)
     trace_dir = output_dir / "traces"
     block_dir = output_dir / "blocks"
-    trace_dir.mkdir(parents=True)
-    block_dir.mkdir(parents=True)
+    # Archived builds can retain their labeled tables after the raw shards
+    # have been moved elsewhere. New partitions must not be mixed into them.
+    protected = ("traces", "blocks", *FEATURE_BUILD_FILES, "split_metadata.json")
+    for name in protected:
+        path = output_dir / name
+        if path.exists() or path.is_symlink():
+            raise FileExistsError(f"Partition destination already exists: {path}")
 
-    ds_stream = load_dataset(DATASET_ID, split=SPLIT, streaming=True)
-    iterator = islice(ds_stream, max_rows) if max_rows is not None else ds_stream
-
-    current_chunk: list[Mapping[str, object]] = []
+    output_dir.mkdir(parents=True, exist_ok=True)
     trace_id = 0
-    part_id = 0
     total_blocks = 0
+    part_id = 0
+    with TemporaryDirectory(dir=output_dir, prefix=".partitions-") as temp:
+        staging = Path(temp)
+        for name in ("traces", "blocks"):
+            (staging / name).mkdir()
 
-    for row in tqdm(iterator, desc="Streaming traces"):
-        current_chunk.append(row)
-
-        if len(current_chunk) >= chunk_size:
-            df_traces, df_blocks = build_feature_chunk(current_chunk, trace_id)
-            df_traces.to_parquet(
-                trace_dir / f"traces_part_{part_id:04d}.parquet",
-                index=False,
-            )
-            df_blocks.to_parquet(
-                block_dir / f"blocks_part_{part_id:04d}.parquet",
-                index=False,
-            )
-
+        stream = load_dataset(DATASET_ID, split=SPLIT, streaming=True)
+        iterator = iter(tqdm(islice(stream, max_rows), desc="Streaming traces"))
+        while True:
+            chunk = list(islice(iterator, chunk_size))
+            if not chunk and part_id:
+                break
+            # Even an empty stream gets one typed shard so both directories
+            # can be opened by the same parquet reader used for a full build.
+            df_traces, df_blocks = build_feature_chunk(chunk, trace_id)
+            for name, table in (("traces", df_traces), ("blocks", df_blocks)):
+                table.to_parquet(staging / name / f"{name}_part_{part_id:04d}.parquet", index=False)
             trace_id += len(df_traces)
             total_blocks += len(df_blocks)
             part_id += 1
-            current_chunk = []
+            if len(chunk) < chunk_size:
+                break
 
-    if current_chunk:
-        df_traces, df_blocks = build_feature_chunk(current_chunk, trace_id)
-        df_traces.to_parquet(
-            trace_dir / f"traces_part_{part_id:04d}.parquet",
-            index=False,
-        )
-        df_blocks.to_parquet(
-            block_dir / f"blocks_part_{part_id:04d}.parquet",
-            index=False,
-        )
-
-        trace_id += len(df_traces)
-        total_blocks += len(df_blocks)
-        part_id += 1
+        # Exclusive mkdir reserves each destination, including for competing writers.
+        # Roll back only directories successfully created by this invocation.
+        with ExitStack() as rollback:
+            for dest in (trace_dir, block_dir):
+                dest.mkdir()
+                rollback.callback(rmtree, dest)
+            for dest in (trace_dir, block_dir):
+                for part in (staging / dest.name).iterdir():
+                    part.rename(dest / part.name)
+            rollback.pop_all()
 
     return {
         "output_dir": str(output_dir),
@@ -607,8 +667,18 @@ def write_feature_partitions(
     }
 
 
-def latest_feature_build_dir(base_dir: Path) -> Path:
-    """Return the newest local full-feature build directory.
+def read_feature_table(path: Path) -> tuple[pd.DataFrame, str]:
+    """Read a published parquet and fingerprint the same open file for evaluation."""
+    # Holding the file open ties the digest and rows to the same version
+    # even if another process replaces the path between the two reads.
+    with path.open("rb") as stream:
+        digest = file_digest(stream, "sha256").hexdigest()
+        stream.seek(0)
+        return pd.read_parquet(stream), digest
+
+
+def latest_feature_build_dir(base_dir: Path, *, include_capped: bool = False) -> Path:
+    """Return the newest completed build, including row-limited pilots when requested.
 
     The project keeps generated parquet files under ignored ``data/`` paths.
     This helper lets notebooks use an existing local build without hard-coding a
@@ -619,19 +689,23 @@ def latest_feature_build_dir(base_dir: Path) -> Path:
     if not base_dir.exists():
         raise FileNotFoundError(f"Feature build directory does not exist: {base_dir}")
 
-    candidates = [
-        path for path in base_dir.iterdir()
-        if path.is_dir()
-        and all((path / file_name).exists() for file_name in FEATURE_BUILD_FILES)
-    ]
-    if not candidates:
-        required = ", ".join(FEATURE_BUILD_FILES)
-        raise FileNotFoundError(
-            f"No complete feature build found under {base_dir}. "
-            f"Expected each build directory to contain: {required}."
-        )
+    for path in sorted(base_dir.iterdir(), reverse=True):
+        if path.name.startswith(".") or not path.is_dir():
+            continue
+        if not all((path / name).is_file() for name in FEATURE_BUILD_FILES):
+            continue
+        # Historical builds may predate metadata. For newer builds, a row cap
+        # identifies a pilot even when all expected labeled files are present.
+        metadata = path / "split_metadata.json"
+        if not include_capped and metadata.is_file():
+            if json.loads(metadata.read_text()).get("max_rows") is not None:
+                continue
+        return path
 
-    return max(candidates, key=lambda path: path.name)
+    required = ", ".join(FEATURE_BUILD_FILES)
+    raise FileNotFoundError(
+        f"No complete full feature build found under {base_dir}. Required files: {required}."
+    )
 
 
 def count_share_table(df: pd.DataFrame, column: str) -> pd.DataFrame:
